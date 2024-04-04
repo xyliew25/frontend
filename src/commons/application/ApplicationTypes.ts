@@ -122,14 +122,16 @@ export enum SupportedLanguage {
   JAVASCRIPT = 'JavaScript',
   SCHEME = 'Scheme',
   PYTHON = 'Python',
-  C = 'C'
+  C = 'C',
+  GO = 'Go',
 }
 
 export const SUPPORTED_LANGUAGES = [
   SupportedLanguage.JAVASCRIPT,
   SupportedLanguage.SCHEME,
   SupportedLanguage.PYTHON,
-  SupportedLanguage.C
+  SupportedLanguage.C,
+  SupportedLanguage.GO,
 ];
 
 /**
@@ -221,6 +223,16 @@ export const cLanguages: SALanguage[] = [
   }
 ];
 
+export const goLanguages: SALanguage[] = [
+  {
+    chapter: Chapter.FULL_GO,
+    variant: Variant.DEFAULT,
+    displayName: 'Go',
+    mainLanguage: SupportedLanguage.GO,
+    supports: {},
+  }
+];
+
 export const styliseSublanguage = (chapter: Chapter, variant: Variant = Variant.DEFAULT) => {
   return getLanguageConfig(chapter, variant).displayName;
 };
@@ -290,7 +302,8 @@ export const ALL_LANGUAGES: readonly SALanguage[] = [
   htmlLanguage,
   ...schemeLanguages,
   ...pyLanguages,
-  ...cLanguages
+  ...cLanguages,
+  ...goLanguages,
 ];
 // TODO: Remove this function once logic has been fully migrated
 export const getLanguageConfig = (
