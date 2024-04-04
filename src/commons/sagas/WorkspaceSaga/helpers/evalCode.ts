@@ -1,5 +1,6 @@
 import { compileAndRun as compileAndRunCCode } from '@sourceacademy/c-slang/ctowasm/dist/index';
 import { tokenizer } from 'acorn';
+import { compileAndRunGoCode } from 'go-slang/build/index';
 import { Context, interrupt, Result, resume, runFilesInContext } from 'js-slang';
 import { ACORN_PARSE_OPTIONS, TRY_AGAIN } from 'js-slang/dist/constants';
 import { InterruptedError } from 'js-slang/dist/errors/errors';
@@ -240,10 +241,18 @@ export function* evalCode(
       });
   }
 
+  function runGoCode(code: string) {
+    compileAndRunGoCode(code);
+    return {
+      status: 'finished',
+    };
+  }
+
   const isNonDet: boolean = context.variant === Variant.NON_DET;
   const isLazy: boolean = context.variant === Variant.LAZY;
   const isWasm: boolean = context.variant === Variant.WASM;
   const isC: boolean = context.chapter === Chapter.FULL_C;
+  const isGo: boolean = context.chapter === Chapter.FULL_GO;
 
   let lastDebuggerResult = yield select(
     (state: OverallState) => state.workspaces[workspaceLocation].lastDebuggerResult
@@ -251,7 +260,7 @@ export function* evalCode(
 
   // Handles `console.log` statements in fullJS
   const detachConsole: () => void =
-    context.chapter === Chapter.FULL_JS
+    context.chapter === Chapter.FULL_JS || context.chapter === Chapter.FULL_GO
       ? DisplayBufferService.attachConsole(workspaceLocation)
       : () => {};
 
@@ -263,6 +272,8 @@ export function* evalCode(
         ? call_variant(context.variant)
         : isC
         ? call(cCompileAndRun, entrypointCode, context)
+        : isGo
+        ? call(runGoCode, entrypointCode)
         : call(
             runFilesInContext,
             isFolderModeEnabled
