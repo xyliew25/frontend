@@ -242,7 +242,8 @@ export function* evalCode(
   }
 
   async function runGoCode(code: string) {
-    return await compileAndRunGoCode(code)
+    const multiThread = context.variant === Variant.MULTI_THREADED;
+    return await compileAndRunGoCode(code, multiThread)
       .then((result: any) => {
         if (result.status === 'error') {
           // TODO: report any failure
@@ -280,7 +281,7 @@ export function* evalCode(
   const isWasm: boolean = context.variant === Variant.WASM;
   const isC: boolean = context.chapter === Chapter.FULL_C;
   const isGo: boolean = context.chapter === Chapter.FULL_GO;
-
+  
   let lastDebuggerResult = yield select(
     (state: OverallState) => state.workspaces[workspaceLocation].lastDebuggerResult
   );

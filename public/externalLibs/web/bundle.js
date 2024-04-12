@@ -44,33 +44,31 @@ exports.__esModule = true;
 exports.Memory = exports.memory_size = exports.word_size = void 0;
 var types_1 = require("../../common/types");
 var utils_1 = require("../utils");
-var goroutine_1 = require("../goroutine");
 exports.word_size = 8;
 var mega = Math.pow(2, 20);
 exports.memory_size = 5000;
-var size_offset = 5;
+// update the size offset to 6
+//  [1 byte tag, 4 bytes payload (depending on node type),
+//  1 byte unused, 2 bytes #children]
+var size_offset = 6;
 // TODO: No garbage collection yet
 var Memory = /** @class */ (function () {
-    function Memory(data) {
+    function Memory(state) {
         var _this = this;
+        this.replicate = function (state) {
+            _this.dataView = new DataView(state.data);
+            _this.builtin_frame = state.builtin_frame;
+            _this.False = state.False;
+            _this.True = state.True;
+            _this.Undefined = state.Undefined;
+            _this.Unassigned = state.Unassigned;
+            _this.Null = state.Null;
+        };
         this.create_new_environment = function () {
             var non_empty_env = _this.mem_allocate_Environment(0);
             return _this.mem_Environment_extend(_this.builtin_frame, non_empty_env);
         };
         this.allocate_builtin_frame = function () {
-            _this.primitive_object = {};
-            _this.builtin_array = [];
-            {
-                var i = 0;
-                for (var key in _this.builtin_object) {
-                    _this.primitive_object[key] = {
-                        tag: 'BUILTIN',
-                        id: i,
-                        arity: 1
-                    };
-                    _this.builtin_array[i++] = _this.builtin_object[key];
-                }
-            }
             var primitive_values = Object.values(_this.primitive_object);
             var frame_address = _this.mem_allocate_Frame(primitive_values.length);
             for (var i = 0; i < primitive_values.length; i++) {
@@ -80,18 +78,19 @@ var Memory = /** @class */ (function () {
             _this.builtin_frame = frame_address;
         };
         this.mem_allocate = function (tag, size) {
-            if (_this.free + size >= _this.dataView.byteLength / exports.word_size) {
+            // console.log('free:', this.free(), 'size:', size, 'dataView.byteLength:', this.dataView.byteLength, 'word_size:', word_size)
+            var current_free = _this.increase_free(size);
+            if (current_free + size >= _this.dataView.byteLength / exports.word_size) {
                 throw new Error('Out of memory');
             }
-            var address = _this.free;
-            _this.free += size;
+            var address = current_free;
             _this.setUint8(address * exports.word_size, tag);
             _this.setUint16(address * exports.word_size + size_offset, size);
             return address;
         };
         // get and set a word in mem at given address
-        this.mem_get = function (address) { return _this.getFloat64(address * exports.word_size); };
-        this.mem_set = function (address, x) { return _this.setFloat64(address * exports.word_size, x); };
+        this.mem_get = function (address) { return _this.getUint64(address * exports.word_size); };
+        this.mem_set = function (address, x) { return _this.setUint64(address * exports.word_size, x); };
         // child index starts at 0
         this.mem_get_child = function (address, child_index) { return _this.mem_get(address + 1 + child_index); };
         this.mem_set_child = function (address, child_index, value) {
@@ -272,13 +271,13 @@ var Memory = /** @class */ (function () {
         // Buffered Channel
         // [1 byte tag, 4 bytes unused,
         //  2 bytes #children, 1 byte unused]
-        // followed by 1 type, 1 number (buffer size), 1 buffer count
-        // 1 offset, buffer size number of addresses
+        // followed by 1 type, 1 buffer count (number)
+        // 1 slot-out, 1 lock, buffer size number of addresses
         // note: #children is 0
         this.mem_allocate_Buffered_Channel = function (size, type) {
-            var ch_address = _this.mem_allocate(utils_1.Buffered_Channel_tag, 5 + Math.max(1, size)); // allocate one more for unbuffered channel
+            var ch_address = _this.mem_allocate(utils_1.Buffered_Channel_tag, 5 + Math.max(1, size));
             _this.mem_set(ch_address + 1, type);
-            _this.mem_set(ch_address + 2, size);
+            _this.mem_set(ch_address + 2, 0);
             _this.mem_set(ch_address + 3, 0);
             _this.mem_set(ch_address + 4, 0);
             return ch_address;
@@ -307,36 +306,11 @@ var Memory = /** @class */ (function () {
             return _this.is_Buffered_Channel(address) || _this.is_Unbuffered_Channel(address);
         };
         this.unop_microcode = {
-            '<-': function (x, state) {
-                if (!_this.is_Channel(x)) {
+            '<-': function (chan_addr, state) {
+                if (!_this.is_Channel(chan_addr)) {
                     throw new Error('unop: not a channel');
                 }
-                if (_this.is_Buffered_Channel(x)) {
-                    var size = _this.mem_get(x + 2);
-                    var count = _this.mem_get(x + 3);
-                    if (count === 0) {
-                        state.PC--;
-                        state.state = goroutine_1.GoroutineState.BLOCKED;
-                        return -1;
-                    }
-                    var offset = _this.mem_get(x + 4);
-                    var pos = offset;
-                    var addr = _this.mem_get_child(x, 4 + pos);
-                    _this.mem_set(x + 2, count - 1);
-                    _this.mem_set(x + 4, (pos + 1) % size);
-                    return addr;
-                }
-                else {
-                    var hasData = _this.mem_get_child(x, 1);
-                    if (_this.is_False(hasData)) {
-                        state.PC--;
-                        state.state = goroutine_1.GoroutineState.BLOCKED;
-                        return -1;
-                    }
-                    var addr = _this.mem_get_child(x, 3);
-                    _this.mem_set_child(x, 1, _this.False);
-                    return addr;
-                }
+                return _this.channel_receive(chan_addr, state);
             }
         };
         this.binop_microcode = {
@@ -379,7 +353,7 @@ var Memory = /** @class */ (function () {
         };
         this.JS_value_to_address = function (x) {
             return x === undefined
-                ? _this.is_Undefined
+                ? _this.Undefined
                 : x.tag === types_1.GoTag.Boolean
                     ? x.val
                         ? _this.True
@@ -425,85 +399,61 @@ var Memory = /** @class */ (function () {
                 return address;
             },
             Lock: function (state) {
-                var address = state.OS[state.OS.length - 2];
-                if (!_this.is_Mutex(address)) {
-                    console.error('not a mutex');
-                }
-                var locked = _this.mem_get(address + 1);
-                if (locked === 1) {
-                    // handle state where mutex is already locked
-                    state.PC--;
-                    state.state = goroutine_1.GoroutineState.BLOCKED;
-                    return;
-                }
-                _this.mem_set(address + 1, 1);
-                _this.mem_set(address + 2, state.currentThread);
-                state.OS.pop(); // pop the fun; apply builtin will pop the method name
-                return address;
+                return _this.lock(state);
             },
             Unlock: function (state) {
-                // pop the second last element
-                var address = state.OS[state.OS.length - 2];
-                if (!_this.is_Mutex(address)) {
-                    throw new Error('not a mutex');
-                }
-                var locked = _this.mem_get(address + 1);
-                var owner = _this.mem_get(address + 2);
-                if (locked === 0 || owner !== state.currentThread) {
-                    throw new Error('sync: unlock of unlocked mutex');
-                }
-                _this.mem_set(address + 1, 0);
-                state.OS.pop();
-                return address;
+                return _this.unlock(state);
             },
             Add: function (state) {
-                var address = state.OS[state.OS.length - 3];
-                if (!_this.is_WaitGroup(address)) {
-                    throw new Error('not a WaitGroup');
-                }
-                var count = _this.mem_get(address + 1);
-                var additional = _this.address_to_JS_value(state.OS.pop());
-                _this.mem_set(address + 1, count + additional);
-                state.OS.pop();
-                return address;
+                return _this.wg_add(state);
             },
             Done: function (state) {
-                var address = state.OS[state.OS.length - 2];
-                if (!_this.is_WaitGroup(address)) {
-                    throw new Error('not a WaitGroup');
-                }
-                var count = _this.mem_get(address + 1);
-                _this.mem_set(address + 1, count - 1);
-                state.OS.pop();
-                return address;
+                return _this.wg_done(state);
             },
             Wait: function (state) {
-                var address = state.OS[state.OS.length - 2];
-                if (!_this.is_WaitGroup(address)) {
-                    throw new Error('not a WaitGroup');
-                }
-                var count = _this.mem_get(address + 1);
-                if (count !== 0) {
-                    state.PC--;
-                    state.state = goroutine_1.GoroutineState.BLOCKED;
-                    return;
-                }
-                state.OS.pop();
-                return address;
+                return _this.wg_wait(state);
             }
         };
-        data ? this.set_memory(data) : this.mem_make(exports.memory_size * exports.word_size);
+        if (state) {
+            this.replicate(state);
+        }
+        this.primitive_object = {};
+        this.builtin_array = [];
+        {
+            var i = 0;
+            for (var key in this.builtin_object) {
+                this.primitive_object[key] = {
+                    tag: 'BUILTIN',
+                    id: i,
+                    arity: 1
+                };
+                this.builtin_array[i++] = this.builtin_object[key];
+            }
+        }
+    }
+    Memory.prototype.initialize = function () {
+        this.mem_make(exports.memory_size * exports.word_size);
         this.builtin_frame = 0;
-        this.free = 0;
         this.allocate_literal_values();
         this.allocate_builtin_frame();
         // TODO: constants
-    }
+    };
+    Memory.prototype.base_state = function () {
+        return {
+            data: this.dataView.buffer,
+            builtin_frame: this.builtin_frame,
+            False: this.False,
+            True: this.True,
+            Undefined: this.Undefined,
+            Unassigned: this.Unassigned,
+            Null: this.Null
+        };
+    };
     return Memory;
 }());
 exports.Memory = Memory;
 
-},{"../../common/types":1,"../goroutine":2,"../utils":6}],4:[function(require,module,exports){
+},{"../../common/types":1,"../utils":6}],4:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = function (d, b) {
@@ -522,11 +472,31 @@ var __extends = (this && this.__extends) || (function () {
 })();
 exports.__esModule = true;
 exports.SharedMemory = void 0;
+var goroutine_1 = require("../goroutine");
 var memory_1 = require("./memory");
 var SharedMemory = /** @class */ (function (_super) {
     __extends(SharedMemory, _super);
-    function SharedMemory(data) {
-        return _super.call(this, data) || this;
+    function SharedMemory(state) {
+        var _this = _super.call(this, state) || this;
+        _this.memory_state = function () {
+            var super_state = _super.prototype.base_state.call(_this);
+            super_state.free_data = _this.free_data;
+            return super_state;
+        };
+        if (state) {
+            _this.data = state.data;
+            if (state.free_data) {
+                _this.free_data = state.free_data;
+            }
+        }
+        else {
+            _this.free_data = new SharedArrayBuffer(4);
+            Atomics.store(new Uint32Array(_this.free_data), 0, 0);
+        }
+        if (!state) {
+            _this.initialize();
+        }
+        return _this;
     }
     SharedMemory.prototype.mem_make = function (bytes) {
         if (bytes % 8 !== 0) {
@@ -544,34 +514,217 @@ var SharedMemory = /** @class */ (function (_super) {
         this.data = data;
         this.dataView = new DataView(data);
     };
+    SharedMemory.prototype.free = function () {
+        return Atomics.load(new Uint32Array(this.free_data), 0);
+    };
+    SharedMemory.prototype.increase_free = function (size) {
+        return Atomics.add(new Uint32Array(this.free_data), 0, size);
+    };
     SharedMemory.prototype.setUint8 = function (address, value) {
-        this.dataView.setUint8(address, value);
+        Atomics.store(new Uint8Array(this.data, address, 1), 0, value);
     };
     SharedMemory.prototype.setUint16 = function (address, value) {
-        this.dataView.setUint16(address, value);
+        Atomics.store(new Uint16Array(this.data, address, 1), 0, value);
     };
-    SharedMemory.prototype.setFloat64 = function (address, value) {
-        this.dataView.setFloat64(address, value);
+    SharedMemory.prototype.setUint64 = function (address, value) {
+        Atomics.store(new BigUint64Array(this.data, address, 1), 0, BigInt(value));
     };
     SharedMemory.prototype.getUint8 = function (address) {
-        return this.dataView.getUint8(address);
+        return Atomics.load(new Uint8Array(this.data, address, 1), 0);
     };
     SharedMemory.prototype.getUint16 = function (address) {
-        return this.dataView.getUint16(address);
+        return Atomics.load(new Uint16Array(this.data, address, 1), 0);
     };
-    SharedMemory.prototype.getFloat64 = function (address) {
-        return this.dataView.getFloat64(address);
+    SharedMemory.prototype.getUint64 = function (address) {
+        return Number(Atomics.load(new BigUint64Array(this.data, address, 1), 0));
+    };
+    SharedMemory.prototype.lock = function (state) {
+        var address = state.OS[state.OS.length - 2];
+        if (!this.is_Mutex(address)) {
+            console.error('not a mutex');
+        }
+        var locked = this.atomic_compare_exchange_mem_64(address + 1, 0, 1);
+        if (locked === 1) {
+            // handle state where mutex is already locked
+            state.PC--;
+            state.state = goroutine_1.GoroutineState.BLOCKED;
+            return -1;
+        }
+        this.mem_set(address + 2, state.currentThread);
+        state.OS.pop(); // pop the fun; apply builtin will pop the method name
+        return address;
+    };
+    SharedMemory.prototype.unlock = function (state) {
+        // pop the second last element
+        var address = state.OS[state.OS.length - 2];
+        if (!this.is_Mutex(address)) {
+            throw new Error('not a mutex');
+        }
+        var locked = this.atomic_compare_exchange_mem_64(address + 1, 1, 0);
+        var owner = this.mem_get(address + 2);
+        if (locked === 0 || owner !== state.currentThread) {
+            throw new Error('sync: unlock of unlocked mutex');
+        }
+        state.OS.pop();
+        return address;
+    };
+    SharedMemory.prototype.wg_add = function (state) {
+        var address = state.OS[state.OS.length - 3];
+        if (!this.is_WaitGroup(address)) {
+            throw new Error('not a WaitGroup');
+        }
+        var additional = this.address_to_JS_value(state.OS.pop());
+        this.atomic_add_mem_64(address + 1, additional);
+        state.OS.pop();
+        return address;
+    };
+    SharedMemory.prototype.wg_wait = function (state) {
+        var address = state.OS[state.OS.length - 2];
+        if (!this.is_WaitGroup(address)) {
+            throw new Error('not a WaitGroup');
+        }
+        var count = this.mem_get(address + 1);
+        if (count !== 0) {
+            state.PC--;
+            state.state = goroutine_1.GoroutineState.BLOCKED;
+            return -1;
+        }
+        state.OS.pop();
+        return address;
+    };
+    SharedMemory.prototype.wg_done = function (state) {
+        var address = state.OS[state.OS.length - 2];
+        if (!this.is_WaitGroup(address)) {
+            throw new Error('not a WaitGroup');
+        }
+        this.atomic_sub_mem_64(address + 1, 1);
+        state.OS.pop();
+        return address;
+    };
+    SharedMemory.prototype.channel_send = function (state) {
+        var in_addr = state.OS.pop();
+        var chan_addr = state.OS.pop();
+        if (!this.is_Channel(chan_addr)) {
+            console.error('send: not a channel');
+            return;
+        }
+        if (this.is_Buffered_Channel(chan_addr)) {
+            var buffer_size = this.mem_get_size(chan_addr) - 5; // 5 config values
+            var old_count = this.mem_get(chan_addr + 2);
+            var new_count = old_count + 1;
+            while (true) {
+                if (old_count >= buffer_size) {
+                    state.PC--;
+                    state.state = goroutine_1.GoroutineState.BLOCKED;
+                    state.OS.push(chan_addr);
+                    state.OS.push(in_addr);
+                    return;
+                }
+                var count = this.atomic_compare_exchange_mem_64(chan_addr + 2, old_count, new_count);
+                if (count === old_count) {
+                    break;
+                }
+                old_count = count;
+                new_count = old_count + 1;
+            }
+            // attmempting to acquire the lock on the channel
+            var lockAddr = chan_addr + 4;
+            while (this.atomic_compare_exchange_mem_64(lockAddr, 0, 1) === 1) { }
+            var slotOut = this.mem_get(chan_addr + 3);
+            var slotIn = (slotOut + old_count) % buffer_size;
+            this.mem_set_child(chan_addr, 4 + slotIn, in_addr);
+            // release the lock
+            this.atomic_sub_mem_64(lockAddr, 1);
+            state.OS.pop();
+        }
+        else {
+            // unbuffered channel
+            var sender = this.mem_get_child(chan_addr, 2);
+            var hasData = this.mem_get_child(chan_addr, 1);
+            if (sender === state.currentThread && this.is_False(hasData)) {
+                this.mem_set_child(chan_addr, 2, 0);
+                return;
+            }
+            sender = this.atomic_compare_exchange_mem_64(chan_addr + 3, 0, state.currentThread);
+            if (sender === 0) {
+                // no sender
+                this.mem_set_child(chan_addr, 1, this.True);
+                this.mem_set_child(chan_addr, 2, state.currentThread);
+                this.mem_set_child(chan_addr, 3, in_addr);
+            }
+            state.PC--;
+            state.state = goroutine_1.GoroutineState.BLOCKED;
+            state.OS.push(chan_addr);
+            state.OS.push(in_addr);
+        }
+    };
+    SharedMemory.prototype.channel_receive = function (chan_addr, state) {
+        if (this.is_Buffered_Channel(chan_addr)) {
+            var buffer_size = this.mem_get_size(chan_addr) - 5; // 5 config values
+            var old_count = this.mem_get(chan_addr + 2);
+            var new_count = old_count - 1;
+            while (true) {
+                if (old_count === 0) {
+                    state.PC--;
+                    state.state = goroutine_1.GoroutineState.BLOCKED;
+                    return -1;
+                }
+                var count = this.atomic_compare_exchange_mem_64(chan_addr + 2, old_count, new_count);
+                if (count === old_count) {
+                    break;
+                }
+                old_count = count;
+                new_count = old_count + 1;
+            }
+            // attmempting to acquire the lock on the channel
+            var lockAddr = chan_addr + 4;
+            while (this.atomic_compare_exchange_mem_64(lockAddr, 0, 1) === 1) { }
+            var slotOut = this.mem_get(chan_addr + 3);
+            var addr = this.mem_get_child(chan_addr, 4 + slotOut);
+            this.mem_set(chan_addr + 3, (slotOut + 1) % buffer_size);
+            // release the lock
+            this.atomic_sub_mem_64(lockAddr, 1);
+            return addr;
+        }
+        else {
+            var addr = this.mem_get_child(chan_addr, 3);
+            var stillHasData = this.atomic_compare_exchange_mem_64(chan_addr + 2, this.True, this.False);
+            if (this.is_False(stillHasData)) {
+                state.PC--;
+                state.state = goroutine_1.GoroutineState.BLOCKED;
+                return -1;
+            }
+            return addr;
+        }
+    };
+    SharedMemory.prototype.atomic_compare_exchange_mem_64 = function (address, expected, desired) {
+        address = address * memory_1.word_size;
+        return Number(Atomics.compareExchange(new BigUint64Array(this.data, address, 1), 0, BigInt(expected), BigInt(desired)));
+    };
+    SharedMemory.prototype.atomic_add_mem_64 = function (address, value) {
+        address = address * memory_1.word_size;
+        return Number(Atomics.add(new BigUint64Array(this.data, address, 1), 0, BigInt(value)));
+    };
+    SharedMemory.prototype.atomic_sub_mem_64 = function (address, value) {
+        address = address * memory_1.word_size;
+        return Number(Atomics.sub(new BigUint64Array(this.data, address, 1), 0, BigInt(value)));
     };
     return SharedMemory;
 }(memory_1.Memory));
 exports.SharedMemory = SharedMemory;
 
-},{"./memory":3}],5:[function(require,module,exports){
+},{"../goroutine":2,"./memory":3}],5:[function(require,module,exports){
 "use strict";
 exports.__esModule = true;
-exports.RunDone = exports.Run = exports.SetUpDone = exports.SetUp = void 0;
+exports.SpawnNew = exports.RunDone = exports.Run = exports.SetUpDone = exports.SetUp = exports.Log = void 0;
 var sharedMemory_1 = require("../memory/sharedMemory");
 var vm_1 = require("../vm");
+var Log = /** @class */ (function () {
+    function Log() {
+    }
+    return Log;
+}());
+exports.Log = Log;
 var SetUp = /** @class */ (function () {
     function SetUp() {
     }
@@ -596,19 +749,30 @@ var RunDone = /** @class */ (function () {
     return RunDone;
 }());
 exports.RunDone = RunDone;
+var SpawnNew = /** @class */ (function () {
+    function SpawnNew() {
+    }
+    return SpawnNew;
+}());
+exports.SpawnNew = SpawnNew;
 var memory;
 var vm;
-var initialize_vm = function (data, instrs) {
-    memory = new sharedMemory_1.SharedMemory(data);
+var initialize_vm = function (state, instrs) {
+    memory = new sharedMemory_1.SharedMemory(state);
     vm = new vm_1.GoVM(instrs, memory);
-    run(vm.main());
 };
-var run = function (goroutine) {
+var run = function (goroutine, lease) {
     vm["switch"](goroutine);
-    vm.run_all();
+    var controlInstruction = prepare_control_instruction(lease);
+    var has_run = vm.run(controlInstruction);
     vm.save(goroutine);
+    return has_run;
 };
-var handleMainMessage = function (e) {
+var prepare_control_instruction = function (lease) {
+    var spawnBehavior = { type: 'AsyncCommunication' };
+    return { spawnBehavior: spawnBehavior, lease: lease };
+};
+var handle_main_message = function (e) {
     var type = e.data.type;
     if (!type) {
         console.log('Message data is missing type:', e.data);
@@ -616,17 +780,15 @@ var handleMainMessage = function (e) {
     }
     switch (type) {
         case 'setup': {
-            var _a = e.data, buffer = _a.buffer, instrs = _a.instrs;
-            initialize_vm(buffer, instrs);
+            var _a = e.data, state = _a.state, instrs = _a.instrs;
+            initialize_vm(state, instrs);
             postMessage({ type: 'setup_done', success: true });
             break;
         }
         case 'run': {
-            var goroutine = e.data.goroutine;
-            console.log('Running goroutine:', goroutine);
-            run(goroutine);
-            console.log('Done running goroutine:', goroutine);
-            postMessage({ type: 'run_done', goroutine: goroutine });
+            var _b = e.data, goroutine = _b.goroutine, lease = _b.lease;
+            var has_run = run(goroutine, lease);
+            postMessage({ type: 'run_done', goroutine: goroutine, has_run: has_run });
             break;
         }
         default: {
@@ -635,7 +797,16 @@ var handleMainMessage = function (e) {
         }
     }
 };
-onmessage = handleMainMessage;
+onmessage = handle_main_message;
+var originalConsoleLog = console.log;
+console.log = function () {
+    var args = [];
+    for (var _i = 0; _i < arguments.length; _i++) {
+        args[_i] = arguments[_i];
+    }
+    postMessage({ type: 'log', args: args });
+    originalConsoleLog.apply(console, args);
+};
 
 },{"../memory/sharedMemory":4,"../vm":7}],6:[function(require,module,exports){
 "use strict";
@@ -706,27 +877,17 @@ var goroutine_1 = require("./goroutine");
 var GoVM = /** @class */ (function () {
     function GoVM(instrs, memory) {
         var _this = this;
-        this.run = function (scheduler) {
-            _this.scheduler = scheduler;
+        this.run = function (control) {
+            _this.lease = control.lease;
+            _this.spawnBehavior = control.spawnBehavior;
             var has_run = false;
+            _this.start_lease();
             // console.log('running', this.state.currentThreadName)
             while (_this.should_continue()) {
                 var instr = _this.instrs[_this.state.PC++];
                 // console.log('running ', this.state.PC, instr.tag)
                 _this.microcode[instr.tag](instr);
-                _this.scheduler.postLoopUpdate();
-                if (_this.state.state !== goroutine_1.GoroutineState.BLOCKED) {
-                    has_run = true;
-                }
-            }
-            return has_run;
-        };
-        this.run_all = function () {
-            var has_run = false;
-            while (_this.should_continue()) {
-                var instr = _this.instrs[_this.state.PC++];
-                console.log('running ', _this.state.PC, instr.tag);
-                _this.microcode[instr.tag](instr);
+                _this.post_loop_update();
                 if (_this.state.state !== goroutine_1.GoroutineState.BLOCKED) {
                     has_run = true;
                 }
@@ -736,8 +897,57 @@ var GoVM = /** @class */ (function () {
         this.should_continue = function () {
             return (_this.instrs[_this.state.PC].tag !== 'DONE' &&
                 _this.instrs[_this.state.PC].tag !== 'GO_DONE' &&
-                (!_this.scheduler || _this.scheduler.checkCondition()) &&
+                _this.check_lease() &&
                 _this.state.state !== goroutine_1.GoroutineState.BLOCKED);
+        };
+        this.start_lease = function () {
+            if (!_this.lease) {
+                return;
+            }
+            if (_this.lease.type === 'InstructionBatch') {
+                // DO NOTHING
+            }
+            else if (_this.lease.type === 'TimeAllocation') {
+                var timeAllocation = _this.lease;
+                timeAllocation.start = Date.now();
+            }
+            else {
+                console.log('other lease type is not supported');
+            }
+        };
+        this.check_lease = function () {
+            if (!_this.lease) {
+                return true;
+            }
+            if (_this.lease.type === 'InstructionBatch') {
+                var instructionBatch = _this.lease;
+                return instructionBatch.instructionCount > 0;
+            }
+            else if (_this.lease.type === 'TimeAllocation') {
+                var timeAllocation = _this.lease;
+                var elapsedTime = Date.now() - timeAllocation.start;
+                return elapsedTime < timeAllocation.duration;
+            }
+            else {
+                console.log('other lease type is not supported');
+                return true;
+            }
+        };
+        this.post_loop_update = function () {
+            if (!_this.lease) {
+                return;
+            }
+            if (_this.lease.type === 'InstructionBatch') {
+                var instructionBatch = _this.lease;
+                instructionBatch.instructionCount--;
+            }
+            else if (_this.lease.type === 'TimeAllocation') {
+                var timeAllocation = _this.lease;
+                // TODO
+            }
+            else {
+                console.log('other lease type is not supported');
+            }
         };
         this.microcode = {
             LDC: function (instr) { return _this.state.OS.push(_this.memory.JS_value_to_address(instr.val)); },
@@ -796,7 +1006,16 @@ var GoVM = /** @class */ (function () {
             },
             GO: function (instr) {
                 var spawned = _this.spawn_goroutine();
-                _this.scheduler.add(spawned);
+                if (_this.spawnBehavior.type === 'ManualAdd') {
+                    var scheduler = _this.spawnBehavior.scheduler;
+                    scheduler.add(spawned);
+                }
+                else if (_this.spawnBehavior.type === 'AsyncCommunication') {
+                    postMessage({ type: 'spawn_new', goroutine: spawned });
+                }
+                else {
+                    console.log('Spawn Behavior', _this.spawnBehavior.type, 'not supported');
+                }
             },
             RESET: function (instr) {
                 // keep popping...
@@ -810,48 +1029,8 @@ var GoVM = /** @class */ (function () {
                     _this.state.PC--;
                 }
             },
-            SEND: function (state) {
-                var in_addr = _this.state.OS.pop();
-                var chan_addr = _this.state.OS.pop();
-                if (!_this.memory.is_Channel(chan_addr)) {
-                    console.error('send: not a channel');
-                    return;
-                }
-                if (_this.memory.is_Buffered_Channel(chan_addr)) {
-                    var size = _this.memory.mem_get(chan_addr + 2);
-                    var count = _this.memory.mem_get(chan_addr + 3);
-                    if (count >= size) {
-                        _this.state.PC--;
-                        _this.state.state = goroutine_1.GoroutineState.BLOCKED;
-                        _this.state.OS.push(chan_addr);
-                        _this.state.OS.push(in_addr);
-                        return;
-                    }
-                    var offset = _this.memory.mem_get(chan_addr + 4);
-                    var index = (offset + count) % size;
-                    _this.memory.mem_set_child(chan_addr, 4 + index, in_addr);
-                    _this.memory.mem_set(chan_addr + 3, count + 1);
-                    _this.state.OS.pop();
-                }
-                else {
-                    // unbuffered channel
-                    var hasData = _this.memory.mem_get_child(chan_addr, 1);
-                    var sender = _this.memory.mem_get_child(chan_addr, 2);
-                    if (sender == _this.state.currentThread && _this.memory.is_False(hasData)) {
-                        _this.memory.mem_set_child(chan_addr, 2, 0);
-                        return;
-                    }
-                    if (sender == 0) {
-                        // no sender
-                        _this.memory.mem_set_child(chan_addr, 1, _this.memory.True);
-                        _this.memory.mem_set_child(chan_addr, 2, _this.state.currentThread);
-                        _this.memory.mem_set_child(chan_addr, 3, in_addr);
-                    }
-                    _this.state.PC--;
-                    _this.state.state = goroutine_1.GoroutineState.BLOCKED;
-                    _this.state.OS.push(chan_addr);
-                    _this.state.OS.push(in_addr);
-                }
+            SEND: function (instr) {
+                _this.memory.channel_send(_this.state);
             }
         };
         this.spawn_goroutine = function () {

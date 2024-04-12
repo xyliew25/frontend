@@ -6,8 +6,10 @@ import { Chapter, Variant } from 'js-slang/dist/types';
 import React from 'react';
 
 import {
+  cLanguages,
   fullJSLanguage,
   fullTSLanguage,
+  goLanguages,
   htmlLanguage,
   pyLanguages,
   SALanguage,
@@ -87,7 +89,9 @@ export const ControlBarChapterSelect: React.FC<ControlBarChapterSelectProps> = (
     // See https://github.com/source-academy/frontend/pull/2460#issuecomment-1528759912
     ...(Constants.playgroundOnly ? [fullJSLanguage, fullTSLanguage, htmlLanguage] : []),
     ...schemeLanguages,
-    ...pyLanguages
+    ...cLanguages,
+    ...pyLanguages,
+    ...goLanguages
   ];
 
   return (
