@@ -241,11 +241,39 @@ export function* evalCode(
       });
   }
 
-  function runGoCode(code: string) {
-    compileAndRunGoCode(code);
-    return {
-      status: 'finished',
-    };
+  async function runGoCode(code: string) {
+    const multiThread = context.variant === Variant.MULTI_THREADED;
+    return await compileAndRunGoCode(code, multiThread)
+      .then((result: any) => {
+        if (result.status === 'error') {
+          // TODO: report any failure
+          context.errors.push({
+            type: ErrorType.RUNTIME,
+            severity: ErrorSeverity.ERROR,
+            location: {
+              start: {
+                line: 0,
+                column: 0
+              },
+              end: {
+                line: 0,
+                column: 0
+              }
+            },
+            explain: () => result.message,
+            elaborate: () => ''
+          });
+          return {
+            status: 'error',
+            context
+          };
+        }
+        return {
+          status: 'finished',
+          context,
+          value: 'Program exited.'
+        };
+      });
   }
 
   const isNonDet: boolean = context.variant === Variant.NON_DET;
@@ -253,7 +281,7 @@ export function* evalCode(
   const isWasm: boolean = context.variant === Variant.WASM;
   const isC: boolean = context.chapter === Chapter.FULL_C;
   const isGo: boolean = context.chapter === Chapter.FULL_GO;
-
+  
   let lastDebuggerResult = yield select(
     (state: OverallState) => state.workspaces[workspaceLocation].lastDebuggerResult
   );

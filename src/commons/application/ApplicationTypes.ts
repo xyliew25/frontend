@@ -230,6 +230,13 @@ export const goLanguages: SALanguage[] = [
     displayName: 'Go',
     mainLanguage: SupportedLanguage.GO,
     supports: {},
+  }, 
+  {
+    chapter: Chapter.FULL_GO,
+    variant: Variant.MULTI_THREADED,
+    displayName: 'Go (Multi-threaded)',
+    mainLanguage: SupportedLanguage.GO,
+    supports: {},
   }
 ];
 
